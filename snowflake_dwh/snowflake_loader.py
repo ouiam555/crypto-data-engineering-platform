@@ -1,3 +1,4 @@
+import os
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
@@ -7,9 +8,6 @@ default_args = {
     "retry_delay": timedelta(minutes=5)
 }
 
-# ==============================
-# BRONZE
-# ==============================
 def ingest_bronze():
     import httpx, json, io
     from datetime import datetime
@@ -31,9 +29,6 @@ def ingest_bronze():
     client.put_object(BUCKET_NAME, f"{date_str}/raw.json", io.BytesIO(data_bytes), len(data_bytes), content_type="application/json")
     print(f"Bronze saved: {date_str}")
 
-# ==============================
-# SILVER
-# ==============================
 def transform_silver():
     import json, io
     import pandas as pd
@@ -74,9 +69,6 @@ def transform_silver():
     client.put_object("crypto-silver", f"{date_str}/clean.parquet", buffer, buffer.getbuffer().nbytes)
     print("Silver saved")
 
-# ==============================
-# GOLD
-# ==============================
 def build_gold():
     import io
     import pandas as pd
@@ -122,11 +114,9 @@ def build_gold():
     save_parquet(fact_crypto, f"{date_str}/fact_crypto_price.parquet")
     print("Gold saved")
 
-# ==============================
-# LOAD SNOWFLAKE 
-# ==============================
 def load_snowflake():
     import io
+    import os
     import pandas as pd
     import snowflake.connector
     from datetime import datetime
@@ -135,7 +125,6 @@ def load_snowflake():
     date_str = datetime.now().strftime("%Y/%m/%d")
     client = get_minio_client()
 
-    # Gold
     def read_parquet(path):
         response = client.get_object("crypto-gold", path)
         return pd.read_parquet(io.BytesIO(response.read()))
@@ -144,19 +133,17 @@ def load_snowflake():
     dim_date = read_parquet(f"{date_str}/dim_date.parquet")
     fact_crypto = read_parquet(f"{date_str}/fact_crypto_price.parquet")
 
-    # connexion Snowflake
     conn = snowflake.connector.connect(
-        user="OUIAM",
-        password="NewPassword2026!",
-        account="GRRCNZI-NM20069",
-        warehouse="COMPUTE_WH",
+        user=os.getenv("SNOWFLAKE_USER", "OUIAM"),
+        password=os.getenv("SNOWFLAKE_PASSWORD"),
+        account=os.getenv("SNOWFLAKE_ACCOUNT", "GRRCNZI-NM20069"),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         database="CRYPTO_DW",
         schema="GOLD",
         authenticator="snowflake"
     )
     cur = conn.cursor()
 
-    # INSERT dim_crypto
     for _, row in dim_crypto.iterrows():
         cur.execute("""
             MERGE INTO DIM_CRYPTO t
@@ -167,7 +154,6 @@ def load_snowflake():
             VALUES (%s, %s, %s, %s)
         """, (row.crypto_id, row.crypto_id, row.name, row.symbol, int(row.market_cap_rank)))
 
-    # INSERT dim_date
     for _, row in dim_date.iterrows():
         cur.execute("""
             MERGE INTO DIM_DATE t
@@ -179,7 +165,6 @@ def load_snowflake():
         """, (int(row.date_id), int(row.date_id), str(row.full_date),
               int(row.year), int(row.month), int(row.week), int(row.day), int(row.hour)))
 
-    # INSERT fact
     for _, row in fact_crypto.iterrows():
         cur.execute("""
             INSERT INTO FACT_CRYPTO_PRICE
@@ -196,9 +181,6 @@ def load_snowflake():
     conn.close()
     print("Snowflake loaded successfully")
 
-# ==============================
-# DAG
-# ==============================
 with DAG(
     dag_id="crypto_pipeline_dag",
     start_date=datetime(2026, 6, 1),

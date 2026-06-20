@@ -1,0 +1,9 @@
+apache-airflow==2.8.1
+httpx
+pandas
+pyarrow
+minio
+snowflake-connector-python
+python-dotenv
+boto3
+s3fs
